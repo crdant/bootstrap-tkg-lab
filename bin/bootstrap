@@ -12,5 +12,14 @@ done
 
 fly -t bootstrap login --concourse-url "${concourse_url}" --team-name main \
     --username test --password test
+fly -t bootstrap set-pipeline --pipeline bootstrap-tkg-lab --config ci/pipeline.yml --non-interactive
+fly -t bootstrap unpause-pipeline --pipeline bootstrap-tkg-lab
 
-open "${concourse_url}"
+open "${concourse_url}/teams/main/pipelines/bootstrap-tkg-lab"
+
+echo
+echo
+echo "Login into the Concourse instance in your browser as: "
+echo 
+echo "   Username: test"
+echo "   Password: test"

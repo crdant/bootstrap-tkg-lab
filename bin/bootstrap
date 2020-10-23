@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+
+concourse_url="http://localhost:8080"
+
+wget -O work/concourse-compose.yml https://concourse-ci.org/docker-compose.yml
+docker-compose -f work/concourse-compose.yml up -d
+
+until $(curl --output /dev/null --silent --fail "${concourse_url}/api/v1/info"); do
+    printf '.'
+    sleep 5
+done
+
+fly -t bootstrap login --concourse-url "${concourse_url}" --team-name main \
+    --username test --password test
+
+open "${concourse_url}"

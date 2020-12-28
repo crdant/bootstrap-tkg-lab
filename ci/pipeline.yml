@@ -1,13 +1,145 @@
+toolkit_image: &toolkit_image
+  repository: harbor-repo.vmware.com/tsl-end2end/tanzu-automation-toolkit
+  username: ((harbor.robot))
+  password: ((harbor.token))
+
+aws_credentials: &aws_credentials
+  AWS_REGION: ((lab.aws.region))
+  AWS_ACCESS_KEY_ID: ((lab.aws.access-key-id))
+  AWS_SECRET_ACCESS_KEY: ((lab.aws.secret-access-key))
+ 
+save_params: &save_params
+  task: save-params
+  image: tanzu-automation-image
+  params:
+    PARAMS: ((lab))
+  config:
+    platform: linux
+    outputs:
+    - name: params
+    run:
+      path: bash
+      args:
+      - -c
+      - |
+        echo "${PARAMS}" | yq -P r - > params/params.yml
+  
+resources:
+- name: tkg-lab
+  type: git
+  source:
+    uri: https://github.com/crdant/tkg-lab.git
+    branch: feature/concourse-lab-install
+- name: tanzu-automation-image
+  type: registry-image
+  source:
+    <<: *toolkit_image
+- name: aws-cli-image
+  type: registry-image
+  source:
+    repository: amazon/aws-cli
+ 
 jobs:
-  - name: job-hello-world
-    public: true
-    plan:
-      - task: hello-world
-        config:
-          platform: linux
-          image_resource:
-            type: docker-image
-            source: {repository: busybox}
-          run:
-            path: echo
-            args: [hello world]
+- name: prepare-aws-objects
+  plan:
+  - get: tkg-lab
+  - get: tanzu-automation-image
+  - get: aws-cli-image
+  - task: create-cluster-api-stack
+    image: tanzu-automation-image
+    params:
+      <<: *aws_credentials
+    config:
+      platform: linux
+      inputs:
+      - name: tkg-lab
+      run: 
+        path: bash
+        args:
+        - -c
+        - |
+          clusterawsadm alpha bootstrap create-stack
+  - task: create-key-pair
+    image: aws-cli-image
+    params:
+      <<: *aws_credentials
+      TKG_ENVIRONMENT_NAME: ((lab.environment-name))
+      SSH_KEY_FILE_NAME: ((lab.environment-name))-ssh.pem
+    config:
+      platform: linux
+      inputs:
+      - name: tkg-lab
+      outputs:
+      - name: keys
+      run: 
+        path: bash
+        args:
+        - -c
+        - |
+          if [[ ! -f ./keys/$SSH_KEY_FILE_NAME ]]; then
+            aws ec2 delete-key-pair --key-name tkg-$TKG_ENVIRONMENT_NAME-default --region $AWS_REGION --no-cli-pager 
+            aws ec2 create-key-pair --key-name tkg-$TKG_ENVIRONMENT_NAME-default --region $AWS_REGION --output text --query 'KeyMaterial' > keys/$SSH_KEY_FILE_NAME
+          fi
+
+- name: deploy-management-cluster
+  plan:
+  - get: tkg-lab
+    passed: 
+    - prepare-aws-objects
+  - get: tanzu-automation-image
+  - get: aws-cli-image
+  - *save_params
+  - task: create-less-privileged-access
+    image: aws-cli-image
+    params:
+      <<: *aws_credentials
+    config:
+      platform: linux
+      outputs:
+      - name: credentials
+      run:
+        path: bash
+        args:
+        - -c
+        - |
+          aws iam create-access-key --user-name bootstrapper.cluster-api-provider-aws.sigs.k8s.io --output json > credentials/credentials.json
+  - task: update-tkg-config
+    image: tanzu-automation-image
+    params:
+      AWS_REGION: ((lab.aws.region))
+    config:
+      platform: linux
+      inputs:
+      - name: credentials
+      outputs:
+      - name: config
+      run:
+        path: bash
+        args:
+        - -c
+        - |
+          export AWS_ACCESS_KEY_ID=$(jq -r .AccessKey.AccessKeyId credentials/credentials.json)
+          export AWS_SECRET_ACCESS_KEY=$(jq -r .AccessKey.SecretAccessKey credentials/credentials.json)
+          AWS_B64ENCODED_CREDENTIALS=$(clusterawsadm alpha bootstrap encode-aws-credentials)
+          touch config/config.yml
+          yq write config/config.yml -i "AWS_B64ENCODED_CREDENTIALS" $AWS_B64ENCODED_CREDENTIALS
+  - task: deploy-cluster
+    image: tanzu-automation-image
+    params:
+      PARAMS_YAML: params/params.yml
+      TKG_CONFIG: config/config.yml
+      MANAGEMENT_CLUSTER_NAME: ((lab.management-cluster.name))
+    config:
+      platform: linux
+      inputs:
+      - name: tkg-lab
+      - name: params
+      run:
+        path: tkg
+        args:
+        - init
+        - --infrastructure=aws
+        - --name=${MANAGEMENT_CLUSTER_NAME}
+        - --plan=dev
+        - -v
+        - "6"

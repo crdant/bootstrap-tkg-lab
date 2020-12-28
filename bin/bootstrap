@@ -2,8 +2,9 @@
 
 concourse_url="http://localhost:8080"
 
-wget -O work/concourse-compose.yml https://concourse-ci.org/docker-compose.yml
-docker-compose -f work/concourse-compose.yml up -d
+wget -O work/docker-compose.yml https://concourse-ci.org/docker-compose.yml
+yq w -i work/docker-compose.yml 'services.concourse.environment.CONCOURSE_GARDEN_ALLOW_HOST_ACCESS' 1
+docker-compose -f work/docker-compose.yml up -d
 
 until $(curl --output /dev/null --silent --fail "${concourse_url}/api/v1/info"); do
     printf '.'
@@ -12,7 +13,8 @@ done
 
 fly -t bootstrap login --concourse-url "${concourse_url}" --team-name main \
     --username test --password test
-fly -t bootstrap set-pipeline --pipeline bootstrap-tkg-lab --config ci/pipeline.yml --non-interactive
+fly -t bootstrap set-pipeline --pipeline bootstrap-tkg-lab --config ci/pipeline.yml \
+    --load-vars-from ${SECRETS_DIR}/params.yml --non-interactive
 fly -t bootstrap unpause-pipeline --pipeline bootstrap-tkg-lab
 
 open "${concourse_url}/teams/main/pipelines/bootstrap-tkg-lab"
@@ -23,3 +25,5 @@ echo "Login into the Concourse instance in your browser as: "
 echo 
 echo "   Username: test"
 echo "   Password: test"
+echo
+echo
